@@ -15,39 +15,44 @@
   *
   */
 package org.apache.spark.sql
-
 import java.io.FileWriter
 import java.lang.Float
 import java.sql.{DriverManager, SQLException, Connection}
 import java.util.{NoSuchElementException, ArrayList, Properties, List}
 
 import com.ibm.spark.ibmdataserver.Constants
+import org.apache.log4j.Logger
 import org.apache.commons.csv.{CSVPrinter, CSVFormat}
 import org.apache.spark.Partition
 import org.apache.spark.sql.execution.datasources.jdbc.JdbcUtils._
-import org.apache.spark.sql.execution.datasources.jdbc.{JDBCPartition, JdbcUtils, JDBCRelation}
+import org.apache.spark.sql.execution.datasources.jdbc.{JDBCPartition, JdbcUtils, JDBCRelation,JDBCOptions}
 import org.apache.spark.sql.jdbc.{JdbcType, JdbcDialect, JdbcDialects}
 import org.apache.spark.sql.types._
-import org.apache.spark.Logging
+import org.apache.spark.internal.Logging
 
 import scala.util.Random
 
-class IBMJDBCRelation(url: String,
-                      table: String,
-                      parts: Array[Partition],
-                      properties: Properties = new Properties()) (sqlContext: SQLContext)
-  extends JDBCRelation(url, table, parts, properties)(sqlContext)
+class IBMJDBCRelation(parts: Array[Partition],
+                      jdbcOptions : JDBCOptions) (sparkSession: SparkSession)
+  extends JDBCRelation(parts, jdbcOptions)(sparkSession)
+  
   with Logging {
+  @transient val logger = Logger.getLogger(classOf[IBMJDBCRelation]) 
 
   private def getJdbcType(dt: DataType, dialect: JdbcDialect): JdbcType = {
+    
+    logger.info("dt                          "+ dt.toString())
+    logger.info("JdbcUtils getCommonJDBCType "+ JdbcUtils.getCommonJDBCType(dt).toString())
     dialect.getJDBCType(dt).orElse(JdbcUtils.getCommonJDBCType(dt)).getOrElse(
       throw new IllegalArgumentException(s"Can't get JDBC type for ${dt.simpleString}"))
+     // throw new IllegalArgumentException(s"Can't get JDBC type for "+dt.toString()))
   }
+  
 
   def createConnection(url: String, properties: Properties) : () => Connection = {
     () => {
       Class.forName("com.ibm.db2.jcc.DB2Driver");
-      DriverManager.getConnection(url, properties)
+      DriverManager.getConnection(jdbcOptions.url, properties)
     }
   }
 
@@ -85,7 +90,10 @@ class IBMJDBCRelation(url: String,
 
           try {
             conn.setAutoCommit(false) // Everything in the same db transaction.
-            val stmt = insertStatement(conn, table, rddSchema)
+            var isCaseSensitive = true
+            val tableSchema: Option[StructType] = None
+            val insertStmt = getInsertStatement( table, rddSchema,tableSchema,isCaseSensitive, dialect )
+            val stmt = conn.prepareStatement(insertStmt)
             try {
               var rowCount = 0
               while (chunkIterator.hasNext) {
@@ -93,6 +101,7 @@ class IBMJDBCRelation(url: String,
                 val numFields = rddSchema.fields.length
                 var i = 0
                 while (i < numFields) {
+                  logger.info("rddSchema.fields(i).dataType  "+ rddSchema.fields(i).dataType.toString())
                   if (row.isNullAt(i)) {
                     stmt.setNull(i + 1, nullTypes(i))
                   } else {
@@ -257,8 +266,9 @@ class IBMJDBCRelation(url: String,
 
 
     val scriptfileWriter: FileWriter = new FileWriter(scriptfileName)
-    scriptfileWriter.write("connect to " + properties.getProperty(Constants.DBNAME) + " user " + properties.getProperty(Constants.USER) +
-      " using " + properties.getProperty(Constants.PASSWORD) + " ;\n")
+    scriptfileWriter.write("connect to " + jdbcOptions.asConnectionProperties.getProperty(Constants.DBNAME) + 
+                          " user " + jdbcOptions.asConnectionProperties.getProperty(Constants.USER) +
+                          " using " + jdbcOptions.asConnectionProperties.getProperty(Constants.PASSWORD) + " ;\n")
     //scriptfileWriter.write("ingest from file " + fileName + " format delimited insert into " + table + ";")
     scriptfileWriter.write("load client from " + fileName + " of DEL insert into " + table + "( " + columns + " ) ;")
     scriptfileWriter.flush()
@@ -271,22 +281,22 @@ class IBMJDBCRelation(url: String,
   }
 
   def saveTableData(dataFrame: DataFrame, parallelism: Int, path: String, isRemote: Boolean) = {
-    val dialect = JdbcDialects.get(url)
+    val dialect = JdbcDialects.get(jdbcOptions.url)
     val nullTypes: Array[Int] = dataFrame.schema.fields.map { field =>
       getJdbcType(field.dataType, dialect).jdbcNullType
     }
 
     val rddSchema = dataFrame.schema
-    val getConnection: () => Connection = createConnection(url,properties)
-    val batchSize = properties.getProperty(Constants.BATCHSIZE, "1000").toInt
+    val getConnection: () => Connection = createConnection(jdbcOptions.url,jdbcOptions.asConnectionProperties)
+    val batchSize = jdbcOptions.batchSize
 
     if(isRemote) {
       dataFrame.foreachPartition { iterator =>
-        savePartition(getConnection, table, iterator, rddSchema, nullTypes, batchSize, dialect,parallelism)
+        savePartition(getConnection,  jdbcOptions.table, iterator, rddSchema, nullTypes, batchSize, dialect,parallelism)
       }
     } else {
       dataFrame.foreachPartition { iterator =>
-        savePartition(getConnection, table, iterator, rddSchema, nullTypes, batchSize, dialect,path)
+        savePartition(getConnection, jdbcOptions.table, iterator, rddSchema, nullTypes, batchSize, dialect,path)
       }
     }
   }

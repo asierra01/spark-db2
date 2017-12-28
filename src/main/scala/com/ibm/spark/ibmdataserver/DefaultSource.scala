@@ -20,13 +20,18 @@ import java.sql.{SQLException, DriverManager, Connection}
 import java.util.Properties
 
 import org.apache.spark.Partition
-import org.apache.spark.sql.execution.datasources.jdbc.{JDBCPartition, JdbcUtils}
-import org.apache.spark.sql.{DataFrame, SaveMode, SQLContext}
+import org.apache.log4j.Logger
+import org.apache.spark.internal.Logging
+import org.apache.spark.sql.execution.datasources.jdbc.{JDBCPartition, JdbcUtils,JDBCOptions}
+import org.apache.spark.sql.{DataFrame, SaveMode, SQLContext,SparkSession}
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.IBMJDBCRelation
 
-class DefaultSource extends CreatableRelationProvider with DataSourceRegister with RelationProvider{
 
+
+ class DefaultSource extends CreatableRelationProvider with DataSourceRegister with RelationProvider {
+  
+  @transient val logger = Logger.getLogger(classOf[DefaultSource]) 
   override def shortName(): String = Constants.SOURCENAME
 
   private def getConnection(url:String, props:Properties) : Connection = {
@@ -34,6 +39,7 @@ class DefaultSource extends CreatableRelationProvider with DataSourceRegister wi
     DriverManager.getConnection(url, props)
   }
 
+  
   private def createTableIfNotExist(url: String, table: String, mode: SaveMode,
                                     props: Properties, dataFrame: DataFrame) : Unit = {
 
@@ -41,7 +47,16 @@ class DefaultSource extends CreatableRelationProvider with DataSourceRegister wi
     val conn : Connection = getConnection(url, props)
 
     try {
-      var tableExists = JdbcUtils.tableExists(conn, url, table)
+      
+      val parameters : Map[String, String] =  (Map[String, String]() /: props.keySet.toArray) {
+          (acc, key) =>
+          acc + (key.toString -> props.get(key).toString)
+      }
+
+      
+      val jdbcoptions = new JDBCOptions(url,table,parameters)
+          
+      var tableExists = JdbcUtils.tableExists(conn, jdbcoptions)
 
       if (mode == SaveMode.Ignore && tableExists) {
         return
@@ -77,17 +92,20 @@ class DefaultSource extends CreatableRelationProvider with DataSourceRegister wi
   }
 
 
-  private def getNumberOfPartitions(url: String, table: String, props: Properties):
-              Array[Partition] = {
+  private def getNumberOfPartitions(url: String, table: String, props: Properties): Array[Partition] = {
 
     val conn : Connection = getConnection(url, props)
 
     try {
-      var tableExists = JdbcUtils.tableExists(conn, url, table)
+      val parameters : Map[String, String] =  (Map[String, String]() /: props.keySet.toArray) {
+          (acc, key) =>
+          acc + (key.toString -> props.get(key).toString)
+      }
+      val jdbcoptions = new JDBCOptions(url, table,parameters)
+      var tableExists = JdbcUtils.tableExists(conn, jdbcoptions)
       if (!tableExists) {
         sys.error(s"Table $table does not exist.")
       }
-
       val stmt = conn.createStatement();
       try {
         // simplifying assumption that all tables are partitioned across all members
@@ -156,7 +174,25 @@ class DefaultSource extends CreatableRelationProvider with DataSourceRegister wi
   private def getIsRemoteFromParams(parameters: Map[String, String]): Boolean = {
     java.lang.Boolean.valueOf(parameters.getOrElse(Constants.ISREMOTE, "false"))
   }
+  
+  private def getJDBCOptionsFromParams(parameters: Map[String, String]): JDBCOptions = {
+    
+    var props = getPropertiesFromParams(parameters)
+    val jdbcoptions_paramrs : Map[String, String] =  (Map[String, String]() /: props.keySet.toArray) {
+          (acc, key) =>
+          acc + (key.toString -> props.get(key).toString)
+          }
+    logger.info("url parameters        :" + getURLFromParams(parameters).toString())
+    logger.info("table name            :" + getTableNameFromParams(parameters).toString())
+    logger.info("jdbcoptions_paramrs   :" + jdbcoptions_paramrs.toString())
+    var jdbcoptions = new JDBCOptions(getURLFromParams(parameters),
+                                      getTableNameFromParams(parameters),
+                                      jdbcoptions_paramrs)
+                                   
 
+    return jdbcoptions
+  }
+  
   private def getParallelismFromParams(parameters: Map[String, String]): Int = {
     var parallelism = parameters.getOrElse(Constants.PARALLELISM, "2").toInt
     if(parallelism <= 0) {
@@ -174,11 +210,15 @@ class DefaultSource extends CreatableRelationProvider with DataSourceRegister wi
 
     return props
   }
+  
+      
+      
 
-  override def createRelation(sqlContext: SQLContext,
+   override def createRelation(sparkContext: SQLContext,
                               mode: SaveMode,
                               parameters: Map[String, String],
                               data: DataFrame): BaseRelation = {
+    logger.info("parameters " + parameters.toString())
 
     val url: String = getURLFromParams(parameters)
     val table: String = getTableNameFromParams(parameters)
@@ -189,24 +229,26 @@ class DefaultSource extends CreatableRelationProvider with DataSourceRegister wi
     var dbName: String = getDBNameFromParams(parameters)
     var parallelism: Int = getParallelismFromParams(parameters)
     val props: Properties = getPropertiesFromParams(parameters)
-
+    val jdbcOptions: JDBCOptions = getJDBCOptionsFromParams(parameters)
     createTableIfNotExist(url, table, mode, props, data)
 
     val parts = getNumberOfPartitions(url, table, props)
-    val relation = new IBMJDBCRelation(url, table, parts, props)(sqlContext)
+    
+    val relation = new IBMJDBCRelation(parts, jdbcOptions)(sparkContext.sparkSession)
     relation.saveTableData(data, parallelism, tmpPath, isRemote)
     return relation
   }
 
-  override def createRelation(
-                               sqlContext: SQLContext,
+    override def createRelation(
+                               sparkContext: SQLContext,
                                parameters: Map[String, String]): BaseRelation = {
     val url = getURLFromParams(parameters)
     val table = getTableNameFromParams(parameters)
     // Additional properties that we will pass to getConnection
     val props: Properties = getPropertiesFromParams(parameters)
+    val jdbcOptions: JDBCOptions = getJDBCOptionsFromParams(parameters)
 
     val parts = getNumberOfPartitions(url, table, props)
-    new IBMJDBCRelation(url, table, parts, props)(sqlContext)
+    new IBMJDBCRelation(parts, jdbcOptions)(sparkContext.sparkSession)
   }
 }

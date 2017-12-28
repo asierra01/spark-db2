@@ -18,15 +18,16 @@ name := "spark-db2"
 
 version := "1.0"
 
-scalaVersion := "2.10.5"
+// 2.11.8
+scalaVersion := "2.11.8"
 
 
 resolvers += "Typesafe Repo" at "http://repo.typesafe.com/typesafe/releases/"
 resolvers += "Sonatype Repository" at "http://oss.sonatype.org/content/repositories/releases"
 
 // Spark dependencies as provided as they are available in spark runtime
-val sparkDependency = "1.6.0"
-val commonsCSV = "1.2"
+val sparkDependency = "2.2.0"
+val commonsCSV = "1.5"
 
 libraryDependencies += "org.apache.spark"   %% "spark-core"        % sparkDependency  % "provided"
 libraryDependencies += "org.apache.spark"   %% "spark-streaming"   % sparkDependency  % "provided"
@@ -37,3 +38,7 @@ libraryDependencies += "org.apache.spark"   %% "spark-hive"        % sparkDepend
 libraryDependencies += "org.apache.commons" % "commons-csv"       % commonsCSV
 
 assemblyJarName in assembly := "spark-db2.jar"
+
+unmanagedJars in Compile += file("lib/db2jcc4.jar")
+
+mainClass in (Compile, run) := Some("HiSpeedRead")

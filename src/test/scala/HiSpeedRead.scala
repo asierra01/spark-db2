@@ -17,28 +17,49 @@
 import com.ibm.spark.ibmdataserver.Constants
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.{SparkContext, SparkConf}
+import org.apache.spark.internal.Logging
+import org.apache.log4j.Logger
 
 object HiSpeedRead {
 
   def main(args: Array[String]) {
-    val DB2_CONNECTION_URL = "jdbc:db2://localhost:50700/sample:traceFile=C:\\1.txt;"
-
-    val conf = new SparkConf().setMaster("local[2]").setAppName("read test")
+    //val logger = Logger.getLogger(classOf[HiSpeedRead$]) 
+    
+    val DB2_CONNECTION_URL = "jdbc:db2://localhost:50000/sample:traceFile=./mytrace.log;"
+    
+    val conf = new SparkConf().
+             setMaster("local[2]").
+             setAppName("read test")
+             //.setJars(Array("/Users/mac/sqllib/java/db2jcc.jar"))
+  
 
     val sparkContext = new SparkContext(conf)
 
     val sqlContext = new SQLContext(sparkContext)
 
-    Class.forName("com.ibm.db2.jcc.DB2Driver")
+    val clazz = Class.forName("com.ibm.db2.jcc.DB2Driver")
+    var another_clazz = Class.forName("HiSpeedRead")
+    val logger = Logger.getLogger(another_clazz) 
+    val username = scala.util.Properties.envOrElse("DB2_USER",     "mac" )
+    val password = scala.util.Properties.envOrElse("DB2_PASSWORD", "mac" )
 
     val jdbcRdr = sqlContext.read.format("com.ibm.spark.ibmdataserver")
       .option("url", DB2_CONNECTION_URL)
       // .option(Constants.TABLE, tableName)
-      .option("user", "pallavipr")
-      .option("password", "9manjari")
-      .option("dbtable", "employee")
+      .option("user", username)
+      .option("password", password)
+      //.option("dbtable", "employee")
+      .option("dbtable", "customer") //this crash as customer 
+                                     //has xml should be treated as SQL_BINARY field 
       .load()
 
     jdbcRdr.show()
+    jdbcRdr.sparkSession.close()
+    //sys.ShutdownHookThread 
+         //{
+            logger.info("Gracefully stopping Spark Streaming Application")
+            sparkContext.stop()
+            logger.info("Application stopped")
+          //}
   }
 }
